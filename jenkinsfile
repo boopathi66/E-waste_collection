@@ -1,0 +1,72 @@
+pipeline {
+    agent any
+    
+    environment {
+        DOCKER_HUB_USER = 'your_dockerhub_username'
+        IMAGE_NAME      = 'ewaste-portal'
+        IMAGE_TAG       = "${BUILD_NUMBER}"
+        KUBECONFIG_ID   = 'kubernetes-config-credentials-id'
+    }
+    
+    stages {
+        stage('Pull Code') {
+            steps {
+                checkout scm
+            }
+        }
+        
+        stage('Parallel Build & Test') {
+            parallel {
+                stage('Docker Build Image') {
+                    steps {
+                        sh "docker build -t ${DOCKER_HUB_USER}/${IMAGE_NAME}:${IMAGE_TAG} ."
+                        sh "docker build -t ${DOCKER_HUB_USER}/${IMAGE_NAME}:latest ."
+                    }
+                }
+                stage('Static HTML Verification') {
+                    steps {
+                        echo 'Running validation sweeps...'
+                        sh "grep -q 'E-Waste Collection & Recycling Portal' index.html"
+                    }
+                }
+            }
+        }
+        
+        stage('Push Image to Registry') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'dockerhub-credentials-id', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+                    sh "echo \$DOCKER_PASS | docker login -u \$DOCKER_USER --password-stdin"
+                    sh "docker push ${DOCKER_HUB_USER}/${IMAGE_NAME}:${IMAGE_TAG}"
+                    sh "docker push ${DOCKER_HUB_USER}/${IMAGE_NAME}:latest"
+                }
+            }
+        }
+        
+        stage('Deploy to Kubernetes Cluster') {
+            steps {
+                withKubeConfig([credentialsId: "${KUBECONFIG_ID}"]) {
+                    echo 'Updating runtime manifests...'
+                    sh "sed -i 's|IMAGE_PLACEHOLDER|${DOCKER_HUB_USER}/${IMAGE_NAME}:${IMAGE_TAG}|g' deployment.yaml"
+                    sh "kubectl apply -f deployment.yaml"
+                    
+                    echo 'Monitoring deployment stability...'
+                    // Task 4 Automated Rollback Logic via Watchdog Check
+                    sh '''
+                    if ! kubectl rollout status deployment/ewaste-portal-deployment --timeout=60s; then
+                        echo "CRITICAL WARNING: Deployment Rollout failed! Rolling back to last stable version..."
+                        kubectl rollout undo deployment/ewaste-portal-deployment
+                        exit 1
+                    fi
+                    '''
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            // Fulfills mandatory Artifact Archival criteria
+            archiveArtifacts artifacts: 'index.html, deployment.yaml', fingerprint: true
+        }
+    }
+}
