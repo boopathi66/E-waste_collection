@@ -13,7 +13,7 @@ spec:
  app: e-waste-portal
  spec:
  containers:
- - name: html-demo
+ - name: e-waste-portal
  image: boopathi0499/e-waste-portal:latest
  ports:
  - containerPort: 80
